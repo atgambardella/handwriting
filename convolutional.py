@@ -56,21 +56,22 @@ FLAGS = tf.app.flags.FLAGS
 
 def extract_data_and_labels(top_level="data/handwriting_chinese_100_classes/"):
   from matplotlib import pylab as plt
-  data = numpy.zeros(NUM_IMAGES*IMAGE_SIZE*IMAGE_SIZE, dtype=numpy.float32)
+  data = numpy.zeros((NUM_IMAGES, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS), dtype=numpy.float32)
   labels = numpy.zeros(NUM_IMAGES, dtype=numpy.int64)
   for i, label in enumerate(os.listdir(top_level)):
     for j, filename in enumerate(os.listdir(os.path.join(top_level, label))):
       with open(os.path.join(top_level, label, filename)) as f:
         img = Image.open(f)
         img = img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.ANTIALIAS)
-        img = numpy.asarray(img, dtype=numpy.int64)
-        img = img.reshape(IMAGE_SIZE*IMAGE_SIZE)
-        data[i*IMAGES_PER_CLASS + j*IMAGE_SIZE*IMAGE_SIZE:i*IMAGES_PER_CLASS + (j+1)*IMAGE_SIZE*IMAGE_SIZE] = img
+        img = numpy.asarray(img, dtype=numpy.float32)
+        #img = img.reshape(IMAGE_SIZE*IMAGE_SIZE)
+        #data[i*IMAGES_PER_CLASS + j*IMAGE_SIZE*IMAGE_SIZE:i*IMAGES_PER_CLASS + (j+1)*IMAGE_SIZE*IMAGE_SIZE] = img
+        data[i*IMAGES_PER_CLASS + j, :, :, 0] = img
       #The last 6 classes are shifted up by 162
       int_label = int(label, 16) - int("B0A1", 16) if int(label, 16) <= int("B0FE", 16) else int(label, 16) - int("B0A1", 16) - 162
       labels[i*IMAGES_PER_CLASS + j] = int_label
   data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
-  data = data.reshape(NUM_IMAGES, IMAGE_SIZE, IMAGE_SIZE, 1)
+  #data = data.reshape(NUM_IMAGES, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS)
   return data, labels
 
 def fake_data(num_images):
@@ -273,11 +274,11 @@ def main(argv=None):  # pylint: disable=unused-argument
     for step in xrange(int(num_epochs * TRAIN_SIZE) // BATCH_SIZE):
       # Compute the offset of the current minibatch in the data.
       # Note that we could use better randomization across epochs.
-      """
+      #"""
       if step%(TRAIN_SIZE//BATCH_SIZE) == 0:
         print("shuffling data")
         train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
-      """
+      #"""
       offset = (step * BATCH_SIZE) % (TRAIN_SIZE - BATCH_SIZE)
       batch_data = train_data[offset:(offset + BATCH_SIZE), ...]
       batch_labels = train_labels[offset:(offset + BATCH_SIZE)]
