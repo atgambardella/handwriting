@@ -27,6 +27,7 @@ import gzip
 import os
 import sys
 import time
+import random
 
 import numpy
 from PIL import Image
@@ -35,6 +36,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 WORK_DIRECTORY = 'data'
+#BORDERLESS_SIZE = 40
 IMAGE_SIZE = 32
 NUM_CHANNELS = 1
 PIXEL_DEPTH = 255
@@ -50,6 +52,21 @@ NUM_EPOCHS = 10
 EVAL_BATCH_SIZE = 64
 EVAL_FREQUENCY = 100  # Number of steps between evaluations.
 
+# Hyperparameters
+base_learning_rates = [0.001, 0.01, 0.1]
+decay_rates = [0.5, 0.75, 0.9, 1]
+fc_depths = [128, 256, 512, 1024]
+conv_depths = [16, 32, 64]
+filter_sizes = [3, 5]
+dropout_rates = [0.5, 0.75, 1]
+
+base_learning_rate = random.choice(base_learning_rates)
+decay_rate = random.choice(decay_rates)
+fc_depth = random.choice(fc_depths)
+conv_depth = random.choice(conv_depths)
+filter_size = random.choice(filter_sizes)
+dropout_rate = random.choice(dropout_rates)
+l2_reg = random.choice([True, False])
 
 tf.app.flags.DEFINE_boolean("self_test", False, "True if running a self test.")
 FLAGS = tf.app.flags.FLAGS
@@ -60,32 +77,21 @@ def extract_data_and_labels(top_level="data/handwriting_chinese_100_classes/"):
   labels = numpy.zeros(NUM_IMAGES, dtype=numpy.int64)
   for i, label in enumerate(os.listdir(top_level)):
     for j, filename in enumerate(os.listdir(os.path.join(top_level, label))):
-      with open(os.path.join(top_level, label, filename)) as f:
-        img = Image.open(f)
-        img = img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.ANTIALIAS)
-        img = numpy.asarray(img, dtype=numpy.float32)
-        #img = img.reshape(IMAGE_SIZE*IMAGE_SIZE)
-        #data[i*IMAGES_PER_CLASS + j*IMAGE_SIZE*IMAGE_SIZE:i*IMAGES_PER_CLASS + (j+1)*IMAGE_SIZE*IMAGE_SIZE] = img
-        data[i*IMAGES_PER_CLASS + j, :, :, 0] = img
+      img = Image.open(os.path.join(top_level, label, filename))
+      """
+      img = img.resize((BORDERLESS_SIZE, BORDERLESS_SIZE), Image.ANTIALIAS)
+      img_with_border = Image.new("L", (IMAGE_SIZE, IMAGE_SIZE), color=255)
+      img_with_border.paste(img, ((IMAGE_SIZE - BORDERLESS_SIZE)//2, (IMAGE_SIZE - BORDERLESS_SIZE)//2))
+      img_with_border = numpy.asarray(img_with_border, dtype=numpy.float32)
+      data[i*IMAGES_PER_CLASS + j, :, :, 0] = img_with_border
+      """
+      img = img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.ANTIALIAS)
+      data[i*IMAGES_PER_CLASS + j, :, :, 0] = img
       #The last 6 classes are shifted up by 162
       int_label = int(label, 16) - int("B0A1", 16) if int(label, 16) <= int("B0FE", 16) else int(label, 16) - int("B0A1", 16) - 162
       labels[i*IMAGES_PER_CLASS + j] = int_label
   data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
-  #data = data.reshape(NUM_IMAGES, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS)
   return data, labels
-
-def fake_data(num_images):
-  """Generate a fake dataset that matches the dimensions of MNIST."""
-  data = numpy.ndarray(
-      shape=(num_images, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS),
-      dtype=numpy.float32)
-  labels = numpy.zeros(shape=(num_images,), dtype=numpy.int64)
-  for image in xrange(num_images):
-    label = image % 2
-    data[image, :, :, 0] = label - 0.5
-    labels[image] = label
-  return data, labels
-
 
 def error_rate(predictions, labels):
   """Return the error rate based on dense predictions and sparse labels."""
@@ -113,22 +119,24 @@ def count_classes(labels):
   print()
 
 def main(argv=None):  # pylint: disable=unused-argument
-  if FLAGS.self_test:
-    print('Running self-test.')
-    train_data, train_labels = fake_data(256)
-    validation_data, validation_labels = fake_data(EVAL_BATCH_SIZE)
-    test_data, test_labels = fake_data(EVAL_BATCH_SIZE)
-    num_epochs = 1
-  else:
-    # Extract it into numpy arrays.
-    train_data, train_labels = extract_data_and_labels()
-    train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
-    test_data, test_labels = train_data[:TEST_SIZE, ...], train_labels[:TEST_SIZE]
-    train_data, train_labels = train_data[TEST_SIZE:, ...], train_labels[TEST_SIZE:]
-    validation_data, validation_labels = train_data[:VALIDATION_SIZE, ...], train_labels[:VALIDATION_SIZE]
-    train_data, train_labels = train_data[VALIDATION_SIZE:, ...], train_labels[VALIDATION_SIZE:]
-    num_epochs = NUM_EPOCHS
-    #map(count_classes, [train_labels, validation_labels, test_labels])
+  print("Hyperparameters:")
+  print("Learning Rate:", base_learning_rate)
+  print("Decay Rate:", decay_rate)
+  print("Conv Depth:", conv_depth)
+  print("Fully Connected Depth:", fc_depth)
+  print("Filter Size:", filter_size)
+  print("Dropout Rate:", dropout_rate)
+  if l2_reg:
+    print("With L2 Regularization")
+  # Extract it into numpy arrays.
+  train_data, train_labels = extract_data_and_labels()
+  train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
+  test_data, test_labels = train_data[:TEST_SIZE, ...], train_labels[:TEST_SIZE]
+  train_data, train_labels = train_data[TEST_SIZE:, ...], train_labels[TEST_SIZE:]
+  validation_data, validation_labels = train_data[:VALIDATION_SIZE, ...], train_labels[:VALIDATION_SIZE]
+  train_data, train_labels = train_data[VALIDATION_SIZE:, ...], train_labels[VALIDATION_SIZE:]
+  num_epochs = NUM_EPOCHS
+  #map(count_classes, [train_labels, validation_labels, test_labels])
   assert(TRAIN_SIZE == train_labels.shape[0])
   # This is where training samples and labels are fed to the graph.
   # These placeholder nodes will be fed a batch of training data at each
@@ -145,23 +153,23 @@ def main(argv=None):  # pylint: disable=unused-argument
   # initial value which will be assigned when we call:
   # {tf.initialize_all_variables().run()}
   conv1_weights = tf.Variable(
-      tf.truncated_normal([5, 5, NUM_CHANNELS, 32],  # 5x5 filter, depth 32.
+      tf.truncated_normal([filter_size, filter_size, NUM_CHANNELS, conv_depth],  # filter_sizexfilter_size filter, depth conv_depth.
                           stddev=0.1,
                           seed=SEED))
-  conv1_biases = tf.Variable(tf.zeros([32]))
+  conv1_biases = tf.Variable(tf.zeros([conv_depth]))
   conv2_weights = tf.Variable(
-      tf.truncated_normal([5, 5, 32, 64],
+      tf.truncated_normal([filter_size, filter_size, conv_depth, conv_depth*2],
                           stddev=0.1,
                           seed=SEED))
-  conv2_biases = tf.Variable(tf.constant(0.1, shape=[64]))
-  fc1_weights = tf.Variable(  # fully connected, depth 512.
+  conv2_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*2]))
+  fc1_weights = tf.Variable(  # fully connected with depth fc_depth
       tf.truncated_normal(
-          [IMAGE_SIZE // 4 * IMAGE_SIZE // 4 * 64, 512],
+          [IMAGE_SIZE // 4 * IMAGE_SIZE // 4 * conv_depth*2, fc_depth],
           stddev=0.1,
           seed=SEED))
-  fc1_biases = tf.Variable(tf.constant(0.1, shape=[512]))
+  fc1_biases = tf.Variable(tf.constant(0.1, shape=[fc_depth]))
   fc2_weights = tf.Variable(
-      tf.truncated_normal([512, NUM_LABELS],
+      tf.truncated_normal([fc_depth, NUM_LABELS],
                           stddev=0.1,
                           seed=SEED))
   fc2_biases = tf.Variable(tf.constant(0.1, shape=[NUM_LABELS]))
@@ -202,32 +210,31 @@ def main(argv=None):  # pylint: disable=unused-argument
     # Fully connected layer. Note that the '+' operation automatically
     # broadcasts the biases.
     hidden = tf.nn.relu(tf.matmul(reshape, fc1_weights) + fc1_biases)
-    # Add a 50% dropout during training only. Dropout also scales
+    # Add dropout during training only. Dropout also scales
     # activations such that no rescaling is needed at evaluation time.
     if train:
-      hidden = tf.nn.dropout(hidden, 0.5, seed=SEED)
-      #hidden = tf.nn.dropout(hidden, 0.95, seed=SEED)
+      hidden = tf.nn.dropout(hidden, dropout_rate, seed=SEED)
     return tf.matmul(hidden, fc2_weights) + fc2_biases
   # Training computation: logits + cross-entropy loss.
   logits = model(train_data_node, True)
   loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, train_labels_node))
-  # L2 regularization for the fully connected parameters.
-  regularizers = (tf.nn.l2_loss(fc1_weights) + tf.nn.l2_loss(fc1_biases) +
-                  tf.nn.l2_loss(fc2_weights) + tf.nn.l2_loss(fc2_biases))
-  # Add the regularization term to the loss.
-  loss += 5e-4 * regularizers
+  if l2_reg:
+    # L2 regularization for the fully connected parameters.
+    regularizers = (tf.nn.l2_loss(fc1_weights) + tf.nn.l2_loss(fc1_biases) +
+                    tf.nn.l2_loss(fc2_weights) + tf.nn.l2_loss(fc2_biases))
+    # Add the regularization term to the loss.
+    loss += 5e-4 * regularizers
   
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
   batch = tf.Variable(0)
-  # Decay once per epoch, using an exponential schedule starting at 0.01.
+  # Decay once per epoch, using an exponential schedule.
   learning_rate = tf.train.exponential_decay(
-      0.01,                # Base learning rate.
+      base_learning_rate,  # Base learning rate.
       batch * BATCH_SIZE,  # Current index into the dataset.
       TRAIN_SIZE,          # Decay step.
-      0.95,                # Decay rate.
-      #0.75,                # Decay rate.
+      decay_rate,          # Decay rate.
       staircase=True)
   # Use simple momentum for the optimization.
   """
