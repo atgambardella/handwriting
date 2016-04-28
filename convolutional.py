@@ -34,6 +34,7 @@ from PIL import Image
 from six.moves import urllib
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
+from tensorflow.python import control_flow_ops
 
 WORK_DIRECTORY = 'data'
 #BORDERLESS_SIZE = 40
@@ -53,6 +54,7 @@ EVAL_BATCH_SIZE = 64
 EVAL_FREQUENCY = 100  # Number of steps between evaluations.
 
 # Hyperparameters
+"""
 base_learning_rates = [0.001, 0.01, 0.1]
 decay_rates = [0.5, 0.75, 0.9, 1]
 fc_depths = [128, 256, 512, 1024]
@@ -67,6 +69,13 @@ conv_depth = random.choice(conv_depths)
 filter_size = random.choice(filter_sizes)
 dropout_rate = random.choice(dropout_rates)
 l2_reg = random.choice([True, False])
+#"""
+
+base_learning_rate = 0.001
+decay_rate = 0.9
+conv_depth = 64
+filter_size = 5
+dropout_rate = 0.75
 
 tf.app.flags.DEFINE_boolean("self_test", False, "True if running a self test.")
 FLAGS = tf.app.flags.FLAGS
@@ -118,16 +127,49 @@ def count_classes(labels):
     print(v)
   print()
 
+def batch_norm(x, n_out, phase_train, scope='bn', affine=True):
+    """
+    http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow/34634291#34634291
+    Batch normalization on convolutional maps.
+    Args:
+        x:           Tensor, 4D BHWD input maps
+        n_out:       integer, depth of input maps
+        phase_train: boolean, true indicates training phase
+        scope:       string, variable scope
+        affine:      whether to affine-transform outputs
+    Return:
+        normed:      batch-normalized maps
+    """
+    with tf.variable_scope(scope):
+        beta = tf.Variable(tf.constant(0.0, shape=[n_out]),
+            name='beta', trainable=True)
+        gamma = tf.Variable(tf.constant(1.0, shape=[n_out]),
+            name='gamma', trainable=affine)
+
+        batch_mean, batch_var = tf.nn.moments(x, [0,1,2], name='moments')
+        ema = tf.train.ExponentialMovingAverage(decay=0.9)
+        ema_apply_op = ema.apply([batch_mean, batch_var])
+        ema_mean, ema_var = ema.average(batch_mean), ema.average(batch_var)
+        def mean_var_with_update():
+            with tf.control_dependencies([ema_apply_op]):
+                return tf.identity(batch_mean), tf.identity(batch_var)
+        """
+        mean, var = control_flow_ops.cond(phase_train,
+            mean_var_with_update,
+            lambda: (ema_mean, ema_var))
+        """
+        mean, var = (ema_mean, ema_var) if phase_train else mean_var_with_update()
+        normed = tf.nn.batch_norm_with_global_normalization(x, mean, var,
+            beta, gamma, 1e-3, affine)
+    return normed
+
 def main(argv=None):  # pylint: disable=unused-argument
   print("Hyperparameters:")
-  print("Learning Rate:", base_learning_rate)
-  print("Decay Rate:", decay_rate)
-  print("Conv Depth:", conv_depth)
-  print("Fully Connected Depth:", fc_depth)
-  print("Filter Size:", filter_size)
-  print("Dropout Rate:", dropout_rate)
-  if l2_reg:
-    print("With L2 Regularization")
+  print("base_learning_rate =", base_learning_rate)
+  print("decay_rate =", decay_rate)
+  print("conv_depth =", conv_depth)
+  print("filter_size =", filter_size)
+  print("dropout_rate =", dropout_rate)
   # Extract it into numpy arrays.
   train_data, train_labels = extract_data_and_labels()
   train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
@@ -153,26 +195,32 @@ def main(argv=None):  # pylint: disable=unused-argument
   # initial value which will be assigned when we call:
   # {tf.initialize_all_variables().run()}
   conv1_weights = tf.Variable(
-      tf.truncated_normal([filter_size, filter_size, NUM_CHANNELS, conv_depth],  # filter_sizexfilter_size filter, depth conv_depth.
+      tf.truncated_normal([filter_size, filter_size, NUM_CHANNELS, conv_depth],
                           stddev=0.1,
                           seed=SEED))
-  conv1_biases = tf.Variable(tf.zeros([conv_depth]))
+  conv1_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth]))
   conv2_weights = tf.Variable(
       tf.truncated_normal([filter_size, filter_size, conv_depth, conv_depth*2],
                           stddev=0.1,
                           seed=SEED))
   conv2_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*2]))
-  fc1_weights = tf.Variable(  # fully connected with depth fc_depth
-      tf.truncated_normal(
-          [IMAGE_SIZE // 4 * IMAGE_SIZE // 4 * conv_depth*2, fc_depth],
-          stddev=0.1,
-          seed=SEED))
-  fc1_biases = tf.Variable(tf.constant(0.1, shape=[fc_depth]))
-  fc2_weights = tf.Variable(
-      tf.truncated_normal([fc_depth, NUM_LABELS],
+  conv3_weights = tf.Variable(
+      tf.truncated_normal([filter_size, filter_size, conv_depth*2, conv_depth*4],
                           stddev=0.1,
                           seed=SEED))
-  fc2_biases = tf.Variable(tf.constant(0.1, shape=[NUM_LABELS]))
+  conv3_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*4]))
+  """
+  conv4_weights = tf.Variable(
+      tf.truncated_normal([filter_size, filter_size, conv_depth*4, conv_depth*8],
+                          stddev=0.1,
+                          seed=SEED))
+  conv4_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*8]))
+  """
+  softmax_weights = tf.Variable(
+    tf.truncated_normal([4096, NUM_LABELS],
+                          stddev=0.1,
+                          seed=SEED))
+  softmax_biases = tf.Variable(tf.constant(0.1, shape=[NUM_LABELS]))
   # We will replicate the model structure for the training subgraph, as well
   # as the evaluation subgraphs, while sharing the trainable parameters.
   def model(data, train=False):
@@ -182,50 +230,55 @@ def main(argv=None):  # pylint: disable=unused-argument
     # shape matches the data layout: [image index, y, x, depth].
     conv = tf.nn.conv2d(data,
                         conv1_weights,
-                        strides=[1, 1, 1, 1],
+                        strides=[1, 2, 2, 1],
                         padding='SAME')
-    # Bias and rectified linear non-linearity.
     relu = tf.nn.relu(tf.nn.bias_add(conv, conv1_biases))
-    # Max pooling. The kernel size spec {ksize} also follows the layout of
-    # the data. Here we have a pooling window of 2, and a stride of 2.
-    pool = tf.nn.max_pool(relu,
-                          ksize=[1, 2, 2, 1],
-                          strides=[1, 2, 2, 1],
-                          padding='SAME')
-    conv = tf.nn.conv2d(pool,
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
+    conv = tf.nn.conv2d(relu,
                         conv2_weights,
-                        strides=[1, 1, 1, 1],
+                        strides=[1, 2, 2, 1],
                         padding='SAME')
     relu = tf.nn.relu(tf.nn.bias_add(conv, conv2_biases))
-    pool = tf.nn.max_pool(relu,
-                          ksize=[1, 2, 2, 1],
-                          strides=[1, 2, 2, 1],
-                          padding='SAME')
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
+    conv = tf.nn.conv2d(relu,
+                        conv3_weights,
+                        strides=[1, 2, 2, 1],
+                        padding='SAME')
+    relu = tf.nn.relu(tf.nn.bias_add(conv, conv3_biases))
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
+    """
+    conv = tf.nn.conv2d(relu,
+                        conv4_weights,
+                        strides=[1, 2, 2, 1],
+                        padding='SAME')
+    relu = tf.nn.relu(tf.nn.bias_add(conv, conv4_biases))
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
+    """
     # Reshape the feature map cuboid into a 2D matrix to feed it to the
     # fully connected layers.
-    pool_shape = pool.get_shape().as_list()
+    relu_shape = relu.get_shape().as_list()
     reshape = tf.reshape(
-        pool,
-        [pool_shape[0], pool_shape[1] * pool_shape[2] * pool_shape[3]])
+        relu,
+        [relu_shape[0], relu_shape[1] * relu_shape[2] * relu_shape[3]])
     # Fully connected layer. Note that the '+' operation automatically
     # broadcasts the biases.
-    hidden = tf.nn.relu(tf.matmul(reshape, fc1_weights) + fc1_biases)
-    # Add dropout during training only. Dropout also scales
-    # activations such that no rescaling is needed at evaluation time.
-    if train:
-      hidden = tf.nn.dropout(hidden, dropout_rate, seed=SEED)
-    return tf.matmul(hidden, fc2_weights) + fc2_biases
+    return tf.matmul(reshape, softmax_weights) + softmax_biases
   # Training computation: logits + cross-entropy loss.
   logits = model(train_data_node, True)
   loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, train_labels_node))
+  """
   if l2_reg:
     # L2 regularization for the fully connected parameters.
     regularizers = (tf.nn.l2_loss(fc1_weights) + tf.nn.l2_loss(fc1_biases) +
                     tf.nn.l2_loss(fc2_weights) + tf.nn.l2_loss(fc2_biases))
     # Add the regularization term to the loss.
     loss += 5e-4 * regularizers
-  
+  """
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
   batch = tf.Variable(0)
@@ -237,11 +290,6 @@ def main(argv=None):  # pylint: disable=unused-argument
       decay_rate,          # Decay rate.
       staircase=True)
   # Use simple momentum for the optimization.
-  """
-  optimizer = tf.train.MomentumOptimizer(learning_rate,
-                                         0.9).minimize(loss,
-                                                       global_step=batch)
-  #"""
   optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, global_step=batch)
 
   # Predictions for the current training minibatch.
