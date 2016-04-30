@@ -49,7 +49,7 @@ VALIDATION_SIZE = int(int(NUM_IMAGES*0.8)*0.2)  # Size of the validation set.
 TRAIN_SIZE = NUM_IMAGES - TEST_SIZE - VALIDATION_SIZE
 SEED = 66478  # Set to None for random seed.
 BATCH_SIZE = 64
-NUM_EPOCHS = 10
+NUM_EPOCHS = 30
 EVAL_BATCH_SIZE = 64
 EVAL_FREQUENCY = 100  # Number of steps between evaluations.
 
@@ -72,8 +72,8 @@ l2_reg = random.choice([True, False])
 #"""
 
 base_learning_rate = 0.001
-decay_rate = 0.9
-conv_depth = 64
+decay_rate = 0.95
+conv_depth = 64 
 filter_size = 5
 dropout_rate = 0.75
 
@@ -209,15 +209,23 @@ def main(argv=None):  # pylint: disable=unused-argument
                           stddev=0.1,
                           seed=SEED))
   conv3_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*4]))
-  """
   conv4_weights = tf.Variable(
-      tf.truncated_normal([filter_size, filter_size, conv_depth*4, conv_depth*8],
+      tf.truncated_normal([3, 3, conv_depth*4, conv_depth*8],
                           stddev=0.1,
                           seed=SEED))
   conv4_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*8]))
-  """
+  conv5_weights = tf.Variable(
+      tf.truncated_normal([1, 1, conv_depth*8, conv_depth*8],
+                          stddev=0.1,
+                          seed=SEED))
+  conv5_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*8]))
+  conv6_weights = tf.Variable(
+      tf.truncated_normal([1, 1, conv_depth*8, conv_depth*8],
+                          stddev=0.1,
+                          seed=SEED))
+  conv6_biases = tf.Variable(tf.constant(0.1, shape=[conv_depth*8]))
   softmax_weights = tf.Variable(
-    tf.truncated_normal([4096, NUM_LABELS],
+    tf.truncated_normal([2048, NUM_LABELS],
                           stddev=0.1,
                           seed=SEED))
   softmax_biases = tf.Variable(tf.constant(0.1, shape=[NUM_LABELS]))
@@ -249,7 +257,6 @@ def main(argv=None):  # pylint: disable=unused-argument
     relu = tf.nn.relu(tf.nn.bias_add(conv, conv3_biases))
     if train:
       relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
-    """
     conv = tf.nn.conv2d(relu,
                         conv4_weights,
                         strides=[1, 2, 2, 1],
@@ -257,7 +264,20 @@ def main(argv=None):  # pylint: disable=unused-argument
     relu = tf.nn.relu(tf.nn.bias_add(conv, conv4_biases))
     if train:
       relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
-    """
+    conv = tf.nn.conv2d(relu,
+                        conv5_weights,
+                        strides=[1, 1, 1, 1],
+                        padding='SAME')
+    relu = tf.nn.relu(tf.nn.bias_add(conv, conv5_biases))
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
+    conv = tf.nn.conv2d(relu,
+                        conv6_weights,
+                        strides=[1, 1, 1, 1],
+                        padding='SAME')
+    relu = tf.nn.relu(tf.nn.bias_add(conv, conv6_biases))
+    if train:
+      relu = tf.nn.dropout(relu, dropout_rate, seed=SEED)
     # Reshape the feature map cuboid into a 2D matrix to feed it to the
     # fully connected layers.
     relu_shape = relu.get_shape().as_list()
