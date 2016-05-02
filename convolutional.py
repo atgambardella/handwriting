@@ -13,11 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Simple, end-to-end, LeNet-5-like convolutional MNIST model example.
+"""All-convolutional network for Chinese character recognition, based on the MNIST tutorial distributed with tensorflow.
+Running with the current settings should produce a model which achieves a validation error of 5.3%.
 
-This should achieve a test error of 0.7%. Please keep this model as simple and
-linear as possible, it is meant as a tutorial for simple convolutional models.
-Run with --self_test on the command line to execute a short self-test.
+Run with --final_run on the command line to train on both the training and validation sets, and evaluate on the test set.
+This should produce a model which achieves a test error of 4.86%. This model is provided on the github page.
+
+Run with --evaluate on the command line to run a pre-trained model on the images in EVALUATION_DIRECTORY.
 """
 from __future__ import absolute_import
 from __future__ import division
@@ -34,10 +36,13 @@ from PIL import Image
 from six.moves import urllib
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
-from tensorflow.python import control_flow_ops
 
-WORK_DIRECTORY = 'data'
-#BORDERLESS_SIZE = 40
+tf.app.flags.DEFINE_boolean("evaluate", False, "True if running a pre-trained model.")
+tf.app.flags.DEFINE_boolean("final_run", False, "True if training on the training and validation splits, and evaluating on the test split.")
+FLAGS = tf.app.flags.FLAGS
+
+EVALUATION_DIRECTORY = 'evaluate'
+CHECKPOINT_DIRECTORY = 'cv'
 IMAGE_SIZE = 32
 NUM_CHANNELS = 1
 PIXEL_DEPTH = 255
@@ -45,40 +50,20 @@ NUM_LABELS = 100
 IMAGES_PER_CLASS = 500
 NUM_IMAGES = NUM_LABELS*IMAGES_PER_CLASS
 TEST_SIZE = int(NUM_IMAGES*0.2)
-VALIDATION_SIZE = int(int(NUM_IMAGES*0.8)*0.2)  # Size of the validation set.
+VALIDATION_SIZE = int(int(NUM_IMAGES*0.8)*0.2) if not FLAGS.final_run else 0 # Size of the validation set.
 TRAIN_SIZE = NUM_IMAGES - TEST_SIZE - VALIDATION_SIZE
 SEED = 66478  # Set to None for random seed.
 BATCH_SIZE = 64
 NUM_EPOCHS = 30
-EVAL_BATCH_SIZE = 64
+EVAL_BATCH_SIZE = 64 if not FLAGS.evaluate else min(64, len(os.listdir(EVALUATION_DIRECTORY)))
 EVAL_FREQUENCY = 100  # Number of steps between evaluations.
 
 # Hyperparameters
-"""
-base_learning_rates = [0.001, 0.01, 0.1]
-decay_rates = [0.5, 0.75, 0.9, 1]
-fc_depths = [128, 256, 512, 1024]
-conv_depths = [16, 32, 64]
-filter_sizes = [3, 5]
-dropout_rates = [0.5, 0.75, 1]
-
-base_learning_rate = random.choice(base_learning_rates)
-decay_rate = random.choice(decay_rates)
-fc_depth = random.choice(fc_depths)
-conv_depth = random.choice(conv_depths)
-filter_size = random.choice(filter_sizes)
-dropout_rate = random.choice(dropout_rates)
-l2_reg = random.choice([True, False])
-#"""
-
 base_learning_rate = 0.001
 decay_rate = 0.95
 conv_depth = 64 
 filter_size = 5
 dropout_rate = 0.75
-
-tf.app.flags.DEFINE_boolean("self_test", False, "True if running a self test.")
-FLAGS = tf.app.flags.FLAGS
 
 def extract_data_and_labels(top_level="data/handwriting_chinese_100_classes/"):
   from matplotlib import pylab as plt
@@ -86,21 +71,18 @@ def extract_data_and_labels(top_level="data/handwriting_chinese_100_classes/"):
   labels = numpy.zeros(NUM_IMAGES, dtype=numpy.int64)
   for i, label in enumerate(os.listdir(top_level)):
     for j, filename in enumerate(os.listdir(os.path.join(top_level, label))):
-      img = Image.open(os.path.join(top_level, label, filename))
-      """
-      img = img.resize((BORDERLESS_SIZE, BORDERLESS_SIZE), Image.ANTIALIAS)
-      img_with_border = Image.new("L", (IMAGE_SIZE, IMAGE_SIZE), color=255)
-      img_with_border.paste(img, ((IMAGE_SIZE - BORDERLESS_SIZE)//2, (IMAGE_SIZE - BORDERLESS_SIZE)//2))
-      img_with_border = numpy.asarray(img_with_border, dtype=numpy.float32)
-      data[i*IMAGES_PER_CLASS + j, :, :, 0] = img_with_border
-      """
-      img = img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.ANTIALIAS)
+      img = process_image(os.path.join(top_level, label, filename))
       data[i*IMAGES_PER_CLASS + j, :, :, 0] = img
-      #The last 6 classes are shifted up by 162
+      # The last 6 classes are shifted up by 162
       int_label = int(label, 16) - int("B0A1", 16) if int(label, 16) <= int("B0FE", 16) else int(label, 16) - int("B0A1", 16) - 162
       labels[i*IMAGES_PER_CLASS + j] = int_label
   data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
   return data, labels
+
+def process_image(filepath):
+  img = Image.open(filepath)
+  img = img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.ANTIALIAS)
+  return img
 
 def error_rate(predictions, labels):
   """Return the error rate based on dense predictions and sparse labels."""
@@ -110,14 +92,13 @@ def error_rate(predictions, labels):
       predictions.shape[0])
 
 def shuffle_in_unison_inplace(a, b):
-  """
-  http://stackoverflow.com/questions/4601373/better-way-to-shuffle-two-numpy-arrays-in-unison
-  """
+  """http://stackoverflow.com/questions/4601373/better-way-to-shuffle-two-numpy-arrays-in-unison"""
   assert len(a) == len(b)
   p = numpy.random.permutation(len(a))
   return a[p], b[p]
 
 def count_classes(labels):
+  """Use this to make sure the classes are balanced."""
   from collections import Counter
   c = Counter()
   for label in labels:
@@ -127,66 +108,41 @@ def count_classes(labels):
     print(v)
   print()
 
-def batch_norm(x, n_out, phase_train, scope='bn', affine=True):
-    """
-    http://stackoverflow.com/questions/33949786/how-could-i-use-batch-normalization-in-tensorflow/34634291#34634291
-    Batch normalization on convolutional maps.
-    Args:
-        x:           Tensor, 4D BHWD input maps
-        n_out:       integer, depth of input maps
-        phase_train: boolean, true indicates training phase
-        scope:       string, variable scope
-        affine:      whether to affine-transform outputs
-    Return:
-        normed:      batch-normalized maps
-    """
-    with tf.variable_scope(scope):
-        beta = tf.Variable(tf.constant(0.0, shape=[n_out]),
-            name='beta', trainable=True)
-        gamma = tf.Variable(tf.constant(1.0, shape=[n_out]),
-            name='gamma', trainable=affine)
-
-        batch_mean, batch_var = tf.nn.moments(x, [0,1,2], name='moments')
-        ema = tf.train.ExponentialMovingAverage(decay=0.9)
-        ema_apply_op = ema.apply([batch_mean, batch_var])
-        ema_mean, ema_var = ema.average(batch_mean), ema.average(batch_var)
-        def mean_var_with_update():
-            with tf.control_dependencies([ema_apply_op]):
-                return tf.identity(batch_mean), tf.identity(batch_var)
-        """
-        mean, var = control_flow_ops.cond(phase_train,
-            mean_var_with_update,
-            lambda: (ema_mean, ema_var))
-        """
-        mean, var = (ema_mean, ema_var) if phase_train else mean_var_with_update()
-        normed = tf.nn.batch_norm_with_global_normalization(x, mean, var,
-            beta, gamma, 1e-3, affine)
-    return normed
+def label_to_unicode(filename="labels_unicode.txt"):
+  """Creates a list such that lst[i] gives the unicode character for the ith class."""
+  result = []
+  with open(filename) as f:
+    line = f.readline()
+    while line:
+      result.append(line.split()[1])
+      line = f.readline()
+  return result
 
 def main(argv=None):  # pylint: disable=unused-argument
-  print("Hyperparameters:")
-  print("base_learning_rate =", base_learning_rate)
-  print("decay_rate =", decay_rate)
-  print("conv_depth =", conv_depth)
-  print("filter_size =", filter_size)
-  print("dropout_rate =", dropout_rate)
-  # Extract it into numpy arrays.
-  train_data, train_labels = extract_data_and_labels()
-  train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
-  test_data, test_labels = train_data[:TEST_SIZE, ...], train_labels[:TEST_SIZE]
-  train_data, train_labels = train_data[TEST_SIZE:, ...], train_labels[TEST_SIZE:]
-  validation_data, validation_labels = train_data[:VALIDATION_SIZE, ...], train_labels[:VALIDATION_SIZE]
-  train_data, train_labels = train_data[VALIDATION_SIZE:, ...], train_labels[VALIDATION_SIZE:]
-  num_epochs = NUM_EPOCHS
-  #map(count_classes, [train_labels, validation_labels, test_labels])
-  assert(TRAIN_SIZE == train_labels.shape[0])
-  # This is where training samples and labels are fed to the graph.
-  # These placeholder nodes will be fed a batch of training data at each
-  # training step using the {feed_dict} argument to the Run() call below.
-  train_data_node = tf.placeholder(
-      tf.float32,
-      shape=(BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS))
-  train_labels_node = tf.placeholder(tf.int64, shape=(BATCH_SIZE,))
+  if not FLAGS.evaluate:
+    print("Hyperparameters:")
+    print("batch_size =", BATCH_SIZE)
+    print("base_learning_rate =", base_learning_rate)
+    print("decay_rate =", decay_rate)
+    print("conv_depth =", conv_depth)
+    print("filter_size =", filter_size)
+    print("dropout_rate =", dropout_rate)
+    # Extract it into numpy arrays.
+    train_data, train_labels = extract_data_and_labels()
+    train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
+    test_data, test_labels = train_data[:TEST_SIZE, ...], train_labels[:TEST_SIZE]
+    train_data, train_labels = train_data[TEST_SIZE:, ...], train_labels[TEST_SIZE:]
+    validation_data, validation_labels = train_data[:VALIDATION_SIZE, ...], train_labels[:VALIDATION_SIZE]
+    train_data, train_labels = train_data[VALIDATION_SIZE:, ...], train_labels[VALIDATION_SIZE:]
+    num_epochs = NUM_EPOCHS
+    assert(TRAIN_SIZE == train_labels.shape[0])
+    # This is where training samples and labels are fed to the graph.
+    # These placeholder nodes will be fed a batch of training data at each
+    # training step using the {feed_dict} argument to the Run() call below.
+    train_data_node = tf.placeholder(
+        tf.float32,
+        shape=(BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS))
+    train_labels_node = tf.placeholder(tf.int64, shape=(BATCH_SIZE,))
   eval_data = tf.placeholder(
       tf.float32,
       shape=(EVAL_BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS))
@@ -236,6 +192,7 @@ def main(argv=None):  # pylint: disable=unused-argument
     # 2D convolution, with 'SAME' padding (i.e. the output feature map has
     # the same size as the input). Note that {strides} is a 4D array whose
     # shape matches the data layout: [image index, y, x, depth].
+    # We use strided convolutions for dimensionality reduction.
     conv = tf.nn.conv2d(data,
                         conv1_weights,
                         strides=[1, 2, 2, 1],
@@ -287,33 +244,26 @@ def main(argv=None):  # pylint: disable=unused-argument
     # Fully connected layer. Note that the '+' operation automatically
     # broadcasts the biases.
     return tf.matmul(reshape, softmax_weights) + softmax_biases
-  # Training computation: logits + cross-entropy loss.
-  logits = model(train_data_node, True)
-  loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
-      logits, train_labels_node))
-  """
-  if l2_reg:
-    # L2 regularization for the fully connected parameters.
-    regularizers = (tf.nn.l2_loss(fc1_weights) + tf.nn.l2_loss(fc1_biases) +
-                    tf.nn.l2_loss(fc2_weights) + tf.nn.l2_loss(fc2_biases))
-    # Add the regularization term to the loss.
-    loss += 5e-4 * regularizers
-  """
-  # Optimizer: set up a variable that's incremented once per batch and
-  # controls the learning rate decay.
-  batch = tf.Variable(0)
-  # Decay once per epoch, using an exponential schedule.
-  learning_rate = tf.train.exponential_decay(
-      base_learning_rate,  # Base learning rate.
-      batch * BATCH_SIZE,  # Current index into the dataset.
-      TRAIN_SIZE,          # Decay step.
-      decay_rate,          # Decay rate.
-      staircase=True)
-  # Use simple momentum for the optimization.
-  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, global_step=batch)
+  if not FLAGS.evaluate:
+    # Training computation: logits + cross-entropy loss.
+    logits = model(train_data_node, True)
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
+        logits, train_labels_node))
+    # Optimizer: set up a variable that's incremented once per batch and
+    # controls the learning rate decay.
+    batch = tf.Variable(0)
+    # Decay once per epoch, using an exponential schedule.
+    learning_rate = tf.train.exponential_decay(
+        base_learning_rate,  # Base learning rate.
+        batch * BATCH_SIZE,  # Current index into the dataset.
+        TRAIN_SIZE,          # Decay step.
+        decay_rate,          # Decay rate.
+        staircase=True)
+    # Use ADAM for the optimization.
+    optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, global_step=batch)
 
-  # Predictions for the current training minibatch.
-  train_prediction = tf.nn.softmax(logits)
+    # Predictions for the current training minibatch.
+    train_prediction = tf.nn.softmax(logits)
 
   # Predictions for the test and validation, which we'll compute less often.
   eval_prediction = tf.nn.softmax(model(eval_data))
@@ -339,50 +289,64 @@ def main(argv=None):  # pylint: disable=unused-argument
             feed_dict={eval_data: data[-EVAL_BATCH_SIZE:, ...]})
         predictions[begin:, :] = batch_predictions[begin - size:, :]
     return predictions
+  saver = tf.train.Saver()
   # Create a local session to run the training.
-  start_time = time.time()
   with tf.Session() as sess:
-    # Run all the initializers to prepare the trainable parameters.
-    tf.initialize_all_variables().run()
-    print('Initialized!')
-    # Loop through training steps.
-    for step in xrange(int(num_epochs * TRAIN_SIZE) // BATCH_SIZE):
-      # Compute the offset of the current minibatch in the data.
-      # Note that we could use better randomization across epochs.
-      #"""
-      if step%(TRAIN_SIZE//BATCH_SIZE) == 0:
-        print("shuffling data")
-        train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
-      #"""
-      offset = (step * BATCH_SIZE) % (TRAIN_SIZE - BATCH_SIZE)
-      batch_data = train_data[offset:(offset + BATCH_SIZE), ...]
-      batch_labels = train_labels[offset:(offset + BATCH_SIZE)]
-      # This dictionary maps the batch data (as a numpy array) to the
-      # node in the graph it should be fed to.
-      feed_dict = {train_data_node: batch_data,
-                   train_labels_node: batch_labels}
-      # Run the graph and fetch some of the nodes.
-      _, l, lr, predictions = sess.run(
-          [optimizer, loss, learning_rate, train_prediction],
-          feed_dict=feed_dict)
-      if step % EVAL_FREQUENCY == 0:
-        elapsed_time = time.time() - start_time
-        start_time = time.time()
-        print('Step %d (epoch %.2f), %.1f ms' %
-              (step, float(step) * BATCH_SIZE / TRAIN_SIZE,
-               1000 * elapsed_time / EVAL_FREQUENCY))
-        print('Minibatch loss: %.3f, learning rate: %.6f' % (l, lr))
-        print('Minibatch error: %.6f%%' % error_rate(predictions, batch_labels))
-        print('Validation error: %.6f%%' % error_rate(
-            eval_in_batches(validation_data, sess), validation_labels))
-        sys.stdout.flush()
-    # Finally print the result!
-    test_error = error_rate(eval_in_batches(test_data, sess), test_labels)
-    print('Test error: %.6f%%' % test_error)
-    if FLAGS.self_test:
-      print('test_error', test_error)
-      assert test_error == 0.0, 'expected 0.0 test_error, got %.2f' % (
-          test_error,)
-
+    if FLAGS.evaluate:
+      # Print labels for each image in EVALUATION_DIRECTORY
+      labels = label_to_unicode()
+      saver.restore(sess, "{0}/final.ckpt".format(CHECKPOINT_DIRECTORY))
+      data = numpy.zeros((len(os.listdir(EVALUATION_DIRECTORY)), IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS), dtype=numpy.float32)
+      for i, filename in enumerate(os.listdir(EVALUATION_DIRECTORY)):
+        data[i, :, :, 0] = process_image(os.path.join(EVALUATION_DIRECTORY, filename))
+      data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
+      predictions = eval_in_batches(data, sess)
+      for i, filename in enumerate(os.listdir(EVALUATION_DIRECTORY)):
+        print("> {0} {1}".format(filename, labels[numpy.argmax(predictions[i])]))
+    else:
+      start_time = time.time()
+      lowest_valid_err = float("inf")
+      # Run all the initializers to prepare the trainable parameters.
+      tf.initialize_all_variables().run()
+      print('Initialized!')
+      # Loop through training steps.
+      for step in xrange(int(num_epochs * TRAIN_SIZE) // BATCH_SIZE):
+        # Shuffle data once per epoch
+        if step%(TRAIN_SIZE//BATCH_SIZE) == 0:
+          print("shuffling data")
+          train_data, train_labels = shuffle_in_unison_inplace(train_data, train_labels)
+        # Compute the offset of the current minibatch in the data.
+        offset = (step * BATCH_SIZE) % (TRAIN_SIZE - BATCH_SIZE)
+        batch_data = train_data[offset:(offset + BATCH_SIZE), ...]
+        batch_labels = train_labels[offset:(offset + BATCH_SIZE)]
+        # This dictionary maps the batch data (as a numpy array) to the
+        # node in the graph it should be fed to.
+        feed_dict = {train_data_node: batch_data,
+                     train_labels_node: batch_labels}
+        # Run the graph and fetch some of the nodes.
+        _, l, lr, predictions = sess.run(
+            [optimizer, loss, learning_rate, train_prediction],
+            feed_dict=feed_dict)
+        if step % EVAL_FREQUENCY == 0:
+          elapsed_time = time.time() - start_time
+          start_time = time.time()
+          print('Step %d (epoch %.2f), %.1f ms' %
+                (step, float(step) * BATCH_SIZE / TRAIN_SIZE,
+                 1000 * elapsed_time / EVAL_FREQUENCY))
+          print('Minibatch loss: %.3f, learning rate: %.6f' % (l, lr))
+          print('Minibatch error: %.6f%%' % error_rate(predictions, batch_labels))
+          if not FLAGS.final_run:
+            valid_err = error_rate(eval_in_batches(validation_data, sess), validation_labels)
+            print('Validation error: %.6f%%' % valid_err)
+            if valid_err < lowest_valid_err:
+              saver.save(sess, "{0}/{1}.ckpt".format(CHECKPOINT_DIRECTORY, valid_err))
+              lowest_valid_err = valid_err
+          sys.stdout.flush()
+      # Finally print the result!
+      if FLAGS.final_run:
+        saver.save(sess, "{0}/final.ckpt".format(CHECKPOINT_DIRECTORY))
+        test_error = error_rate(eval_in_batches(test_data, sess), test_labels)
+        print('Test error: %.6f%%' % test_error)
+        
 if __name__ == '__main__':
   tf.app.run()
