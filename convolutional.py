@@ -19,7 +19,7 @@ Running with the current settings should produce a model which achieves a valida
 Run with --final_run on the command line to train on both the training and validation sets, and evaluate on the test set.
 This should produce a model which achieves a test error of 4.86%. This model is provided on the github page.
 
-Run with --evaluate on the command line to run a pre-trained model on the images in EVALUATION_DIRECTORY.
+Run with --evaluate on the command line to run a pre-trained model on the images specified on the command line.
 """
 from __future__ import absolute_import
 from __future__ import division
@@ -37,11 +37,10 @@ from six.moves import urllib
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
-tf.app.flags.DEFINE_boolean("evaluate", False, "True if running a pre-trained model.")
+tf.app.flags.DEFINE_string("evaluate", "", "List of images to evaluate.")
 tf.app.flags.DEFINE_boolean("final_run", False, "True if training on the training and validation splits, and evaluating on the test split.")
 FLAGS = tf.app.flags.FLAGS
 
-EVALUATION_DIRECTORY = 'evaluate'
 CHECKPOINT_DIRECTORY = 'cv'
 IMAGE_SIZE = 32
 NUM_CHANNELS = 1
@@ -55,7 +54,7 @@ TRAIN_SIZE = NUM_IMAGES - TEST_SIZE - VALIDATION_SIZE
 SEED = 66478  # Set to None for random seed.
 BATCH_SIZE = 64
 NUM_EPOCHS = 30
-EVAL_BATCH_SIZE = 64 if not FLAGS.evaluate else min(64, len(os.listdir(EVALUATION_DIRECTORY)))
+EVAL_BATCH_SIZE = 64 if not FLAGS.evaluate else min(64, len(FLAGS.evaluate.split()))
 EVAL_FREQUENCY = 100  # Number of steps between evaluations.
 
 # Hyperparameters
@@ -293,15 +292,16 @@ def main(argv=None):  # pylint: disable=unused-argument
   # Create a local session to run the training.
   with tf.Session() as sess:
     if FLAGS.evaluate:
-      # Print labels for each image in EVALUATION_DIRECTORY
+      # Print labels for each image specified on the command line
       labels = label_to_unicode()
+      to_evaluate = FLAGS.evaluate.split()
       saver.restore(sess, "{0}/final.ckpt".format(CHECKPOINT_DIRECTORY))
-      data = numpy.zeros((len(os.listdir(EVALUATION_DIRECTORY)), IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS), dtype=numpy.float32)
-      for i, filename in enumerate(os.listdir(EVALUATION_DIRECTORY)):
-        data[i, :, :, 0] = process_image(os.path.join(EVALUATION_DIRECTORY, filename))
+      data = numpy.zeros((len(to_evaluate), IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS), dtype=numpy.float32)
+      for i, filename in enumerate(to_evaluate):
+        data[i, :, :, 0] = process_image(filename)
       data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
       predictions = eval_in_batches(data, sess)
-      for i, filename in enumerate(os.listdir(EVALUATION_DIRECTORY)):
+      for i, filename in enumerate(to_evaluate):
         print("> {0} {1}".format(filename, labels[numpy.argmax(predictions[i])]))
     else:
       start_time = time.time()
